@@ -12,7 +12,7 @@ A custom node for ComfyUI that transforms a 2D panoramic image into an interacti
 - **Character Block-out** — Place a poseable skeleton stand-in into the scene, sized and positioned to match your intended subject. Use it as a reference for inpainting or ControlNet poses.
 - **Custom Mesh Support** — Drop an OBJ or GLB file into the `models/` folder (or connect a Dust3r GLB path) to use a real mesh as your character block-out instead of the default skeleton.
 - **Full Output Suite** — Produces a rendered view, a clean background without the character, an OpenPose skeleton image, a depth map, hole/inpaint masks, and a sampling map for round-trip editing.
-- **Paste-Back Node** — A companion node (`Qwen 6DOF Inverse`) reprojects your edited view back into the original panorama at exactly the right pixel positions.
+- **Paste-Back Node** — A companion node (` 6DOF Inverse`) reprojects your edited view back into the original panorama at exactly the right pixel positions.
 
 ---
 
@@ -74,7 +74,7 @@ Switch mode to **🚀 Render (High Quality)** and click Queue Prompt. The node w
 
 ### Step 5 — Inpaint and paste back
 
-Feed `view_image` and `inpaint_mask` into your inpainter to fill holes and add content. Then connect the edited image, the original panorama, and the `sampling_map` into the **Qwen 6DOF Inverse** node to stitch the result back into the panorama.
+Feed `view_image` and `inpaint_mask` into your inpainter to fill holes and add content. Then connect the edited image, the original panorama, and the `sampling_map` into the ** 6DOF Inverse** node to stitch the result back into the panorama.
 
 ---
 
@@ -173,13 +173,13 @@ Click a joint sphere to select it individually (IK will solve the chain). Shift-
 | **depth_image** | IMAGE | A depth map of the rendered view (not the input panorama). Can be used with ControlNet Depth or for further compositing. |
 | **inpaint_mask** | MASK | White pixels = regions in the rendered view with no source data (holes caused by reprojection, e.g. areas that were occluded or out of frame in the original image). Feed this into an inpainter to fill the gaps. |
 | **char_mask** | MASK | White pixels = the character silhouette. Use this to composite the character separately, mask inpainting to the character region, or drive a ControlNet layer. |
-| **sampling_map** | SAMPLING_MAP | An internal index buffer recording which pixel in the source panorama corresponds to each pixel in the rendered view. Used exclusively by the **Qwen 6DOF Inverse** node to paste edits back. Do not try to use this as an image directly. |
+| **sampling_map** | SAMPLING_MAP | An internal index buffer recording which pixel in the source panorama corresponds to each pixel in the rendered view. Used exclusively by the ** 6DOF Inverse** node to paste edits back. Do not try to use this as an image directly. |
 
 ---
 
-## 🔄 The Paste-Back Workflow (Qwen 6DOF Inverse)
+## 🔄 The Paste-Back Workflow ( 6DOF Inverse)
 
-The **Qwen 6DOF Inverse** node is the companion to this node. Its purpose is to take an edited rendered view and stitch it back into the original panorama at exactly the right positions.
+The ** 6DOF Inverse** node is the companion to this node. Its purpose is to take an edited rendered view and stitch it back into the original panorama at exactly the right positions.
 
 ### Inputs
 
