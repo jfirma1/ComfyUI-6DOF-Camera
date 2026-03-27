@@ -68,7 +68,7 @@ class Qwen6DOFCamera:
                 "output_size": ("INT", {"default": 512, "min": 64, "max": 4096, "step": 64}),
                 "precision": (["Normal", "High (Super-Sampled)"],),
                 "point_density": (["1x", "2x (Recommended)", "4x (Slow)"], {"default": "2x (Recommended)"}),
-                "fill_holes": ("INT", {"default": 2, "min": 0, "max": 50, "step": 1}),
+                "fill_holes": ("INT", {"default": 8, "min": 0, "max": 50, "step": 1}),
                 "custom_mesh": (mesh_list, {"default": "None"}),
             },
             "optional": {
@@ -326,7 +326,7 @@ class Qwen6DOFCamera:
         u_px, v_px, Z, valid_mask = project_points(points_world)
         source_indices = torch.arange(H * W, device=device, dtype=torch.long).expand(B, -1)
         
-        out_batch, mask_batch, map_batch = [], [], []
+        out_batch, mask_batch, map_batch, depth_buf_batch = [], [], [], []
         
         for b in range(B):
             mask_b = valid_mask[b]
@@ -338,16 +338,40 @@ class Qwen6DOFCamera:
             z_fin, rgb_fin, idx_fin = z_b[screen_mask], rgb_b[screen_mask], idx_b[screen_mask]
             
             sorted_idx = torch.argsort(z_fin, descending=True)
-            lin_idx = v_fin[sorted_idx] * render_size + u_fin[sorted_idx]
-            canvas = torch.zeros((render_size * render_size, 3), device=device)
-            canvas[lin_idx] = rgb_fin[sorted_idx]
-            alpha = torch.zeros((render_size * render_size, 1), device=device)
-            alpha[lin_idx] = 1.0
-            map_c = torch.full((render_size * render_size, 1), -1, device=device, dtype=torch.long)
-            map_c[lin_idx] = idx_fin[sorted_idx].unsqueeze(-1)
+            z_sorted   = z_fin[sorted_idx]
+            u_sorted   = u_fin[sorted_idx]
+            v_sorted   = v_fin[sorted_idx]
+            rgb_sorted = rgb_fin[sorted_idx]
+            idx_sorted = idx_fin[sorted_idx]
+
+            canvas    = torch.zeros((render_size * render_size, 3), device=device)
+            alpha     = torch.zeros((render_size * render_size, 1), device=device)
+            map_c     = torch.full((render_size * render_size, 1), -1, device=device, dtype=torch.long)
+            depth_buf = torch.zeros((render_size * render_size, 1), device=device)
+
+            if z_sorted.numel() > 0:
+                # Per-point splat radius: nearby points get a wider footprint to fill
+                # the screen-space gaps that grow as 1/Z with camera translation.
+                splat_radii = torch.clamp((render_size * 0.002 / z_sorted).long(), 1, 6)
+                max_r = int(splat_radii.max().item())
+                for dy in range(-max_r, max_r + 1):
+                    for dx in range(-max_r, max_r + 1):
+                        dist_sq = dy * dy + dx * dx
+                        paint_mask = splat_radii ** 2 >= dist_sq
+                        if not paint_mask.any():
+                            continue
+                        u_off = (u_sorted[paint_mask] + dx).clamp(0, render_size - 1)
+                        v_off = (v_sorted[paint_mask] + dy).clamp(0, render_size - 1)
+                        lin_off = v_off * render_size + u_off
+                        canvas[lin_off]    = rgb_sorted[paint_mask]
+                        alpha[lin_off]     = 1.0
+                        depth_buf[lin_off] = z_sorted[paint_mask].unsqueeze(-1)
+                        map_c[lin_off]     = idx_sorted[paint_mask].unsqueeze(-1)
+
             out_batch.append(canvas.reshape(render_size, render_size, 3))
-            mask_batch.append(1.0 - alpha.reshape(render_size, render_size)) 
+            mask_batch.append(1.0 - alpha.reshape(render_size, render_size))
             map_batch.append(map_c.reshape(render_size, render_size, 1))
+            depth_buf_batch.append(depth_buf.reshape(render_size, render_size, 1))
 
         # --- CHARACTER RENDER ---
         char_mask_batch, char_color_batch, openpose_batch, depth_batch = [], [], [], []
@@ -477,21 +501,60 @@ class Qwen6DOFCamera:
             openpose_batch.append(torch.zeros((render_size, render_size, 3), device=device))
             depth_batch.append(torch.zeros((render_size, render_size, 3), device=device))
 
-        img_t = torch.stack(out_batch).permute(0, 3, 1, 2)
-        map_t = torch.stack(map_batch).permute(0, 3, 1, 2).float() 
-        mask_t = torch.stack(mask_batch).unsqueeze(1)
+        img_t       = torch.stack(out_batch).permute(0, 3, 1, 2)
+        map_t       = torch.stack(map_batch).permute(0, 3, 1, 2).float()
+        mask_t      = torch.stack(mask_batch).unsqueeze(1)
+        depth_buf_t = torch.stack(depth_buf_batch).permute(0, 3, 1, 2).float()
         char_mask_final = torch.stack(char_mask_batch).unsqueeze(1)
-        char_color_t = torch.stack(char_color_batch).permute(0, 3, 1, 2) 
+        char_color_t = torch.stack(char_color_batch).permute(0, 3, 1, 2)
         pose_t = torch.stack(openpose_batch)
         depth_t = torch.stack(depth_batch).permute(0, 3, 1, 2)
 
+        def _shift_valid(t, dy, dx):
+            """Roll t by (dy,dx) and zero out wrapped boundary rows/cols."""
+            s = torch.roll(t, shifts=(dy, dx), dims=(-2, -1))
+            if dy > 0:   s[..., :dy, :]  = 0
+            elif dy < 0: s[..., dy:, :]  = 0
+            if dx > 0:   s[..., :, :dx]  = 0
+            elif dx < 0: s[..., :, dx:]  = 0
+            return s
+
+        _FILL_DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+                      (-1, -1), (1, 1), (-1, 1), (1, -1)]
+
         for _ in range(fill_holes):
-            dil_img = F.max_pool2d(img_t, 5, 1, 2)
-            dil_map = F.max_pool2d(map_t, 3, 1, 1)
-            fill = mask_t * F.max_pool2d(1.0 - mask_t, 3, 1, 1)
-            img_t = img_t * (1.0 - fill) + dil_img * fill
-            map_t = map_t * (1.0 - fill) + dil_map * fill
-            mask_t = mask_t * (1.0 - fill)
+            # Pixels that are empty (mask=1) but border at least one valid pixel
+            fill_zone = mask_t * F.max_pool2d(1.0 - mask_t, 3, 1, 1)
+            if fill_zone.sum() == 0:
+                break
+
+            best_color = torch.zeros_like(img_t)
+            best_map   = torch.zeros_like(map_t)
+            best_depth = torch.zeros_like(depth_buf_t)
+            has_cand   = torch.zeros_like(mask_t)
+
+            for dy, dx in _FILL_DIRS:
+                # _shift_valid zeros wrapped edges so border holes don't pull opposite-edge colors
+                nb_valid = _shift_valid(1.0 - mask_t, dy, dx)
+                candidate = fill_zone * nb_valid
+                if candidate.sum() == 0:
+                    continue
+                nb_color = torch.roll(img_t,       shifts=(dy, dx), dims=(-2, -1))
+                nb_map   = torch.roll(map_t,       shifts=(dy, dx), dims=(-2, -1))
+                nb_depth = torch.roll(depth_buf_t, shifts=(dy, dx), dims=(-2, -1))
+                # Prefer the deepest valid neighbor: avoids foreground colors
+                # bleeding into disocclusion holes that should show background.
+                deeper = candidate * (nb_depth > best_depth).float()
+                best_color = best_color * (1 - deeper) + nb_color * deeper
+                best_map   = best_map   * (1 - deeper) + nb_map   * deeper
+                best_depth = best_depth * (1 - deeper) + nb_depth * deeper
+                has_cand   = (has_cand + candidate).clamp(0, 1)
+
+            apply_mask  = fill_zone * has_cand
+            img_t       = img_t       * (1 - apply_mask) + best_color * apply_mask
+            map_t       = map_t       * (1 - apply_mask) + best_map   * apply_mask
+            depth_buf_t = depth_buf_t * (1 - apply_mask) + best_depth * apply_mask
+            mask_t      = mask_t      * (1 - apply_mask)
 
         clean_room_t = img_t.clone()
 
