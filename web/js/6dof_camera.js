@@ -2,11 +2,11 @@ import { app } from "../../../scripts/app.js";
 import { VIEWER_6DOF_HTML } from "./viewer_template.js";
 
 app.registerExtension({
-    name: "Comfy.Qwen6DOFCamera",
+    name: "Comfy.SixDOFViewer",
     
     async getCustomWidgets(app) {
         return {
-            Qwen6DOFCamera: (node, inputName, inputData, app) => {
+            SixDOFViewer: (node, inputName, inputData, app) => {
                 const getExtraMenuOptions = node.getExtraMenuOptions;
                 node.getExtraMenuOptions = function(_, options) {
                     if (getExtraMenuOptions) getExtraMenuOptions.apply(this, arguments);
@@ -29,7 +29,7 @@ app.registerExtension({
     },
 
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        if (nodeData.name === "Qwen6DOFCamera") {
+        if (nodeData.name === "SixDOFViewer") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;

@@ -150,7 +150,7 @@ export const VIEWER_6DOF_HTML = `
             
             objMeshGroup.position.copy(charGroup.position);
             objMeshGroup.rotation.copy(charGroup.rotation);
-            objMeshGroup.visible = meshVisible && currentObjMesh !== null;
+            objMeshGroup.visible = charVisible && meshVisible && currentObjMesh !== null;
         }
 
         // ============================================
@@ -206,7 +206,8 @@ export const VIEWER_6DOF_HTML = `
                     \`,
                     transparent: true,
                     vertexColors: true,
-                    depthTest: false
+                    depthTest: false,
+                    depthWrite: false
                 });
 
                 cloudMesh = new THREE.Points(geometry, material);
@@ -249,10 +250,19 @@ export const VIEWER_6DOF_HTML = `
                     for (var x = 0; x < w; x += step) {
                         var i = (y * w + x) * 4;
                         var d = (dD[i] / 255.0) * depthRange + minDepth;
-                        if (d < 0.1 || d > 100) continue;
+                        if (d < 0.3 || d > 100) continue;
                         var u = x / (w - 1), v = y / (h - 1);
-                        var theta = (u * 2 - 1) * Math.PI, phi = (1 - v * 2) * (Math.PI / 2);
-                        var px = Math.sin(theta) * Math.cos(phi) * d, py = Math.sin(phi) * d, pz = -Math.cos(theta) * Math.cos(phi) * d;
+                        var theta = (u * 2 - 1) * Math.PI;
+                        var phi = (1 - v * 2) * (Math.PI / 2);
+                        // Skip pixels near the poles — they all collapse to 2 points,
+                        // creating dense blobs. Thin them out proportionally to cos(phi).
+                        var cosPhi = Math.cos(phi);
+                        if (cosPhi < 0.05) continue;
+                        var skipChance = 1.0 - cosPhi; // 0 at equator, ~1 at poles
+                        if (Math.random() < skipChance * 0.92) continue;
+                        var px = Math.sin(theta) * cosPhi * d;
+                        var py = Math.sin(phi) * d;
+                        var pz = -Math.cos(theta) * cosPhi * d;
                         positions.push(px, py, pz);
                         colors.push(dRGB[i] / 255, dRGB[i + 1] / 255, dRGB[i + 2] / 255);
                         sizes.push(d * 0.05);
@@ -266,7 +276,7 @@ export const VIEWER_6DOF_HTML = `
                     uniforms: {},
                     vertexShader: \`attribute float size; varying vec3 vColor; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_PointSize = size * (300.0 / -mvPosition.z); gl_Position = projectionMatrix * mvPosition; }\`,
                     fragmentShader: \`varying vec3 vColor; void main() { vec2 center = gl_PointCoord - 0.5; float dist = length(center); float alpha = 1.0 - smoothstep(0.3, 0.5, dist); if (alpha < 0.01) discard; gl_FragColor = vec4(vColor, alpha); }\`,
-                    transparent: true, vertexColors: true, depthTest: false
+                    transparent: true, vertexColors: true, depthTest: false, depthWrite: false
                 });
                 cloudMesh = new THREE.Points(geometry, material);
                 cloudMesh.renderOrder = -1;

@@ -582,5 +582,5 @@ class Qwen6DOFInverse:
             
         return (final_pano, final_mask)
 
-NODE_CLASS_MAPPINGS = { "Qwen6DOFCamera": Qwen6DOFCamera, "Qwen6DOFInverse": Qwen6DOFInverse }
-NODE_DISPLAY_NAME_MAPPINGS = { "Qwen6DOFCamera": "Qwen 6DOF Camera (Interactive)", "Qwen6DOFInverse": "Qwen 6DOF Inverse (Paste Back)" }
+NODE_CLASS_MAPPINGS = { "SixDOFViewer": Qwen6DOFCamera, "SixDOFInverse": Qwen6DOFInverse }
+NODE_DISPLAY_NAME_MAPPINGS = { "SixDOFViewer": "6DOF Viewer", "SixDOFInverse": "6DOF Inverse" }
