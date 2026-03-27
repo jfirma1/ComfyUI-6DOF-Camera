@@ -158,6 +158,12 @@ export const VIEWER_6DOF_HTML = `
         // ============================================
         var cloudMesh = null;
         var lastRGBUrl = '';
+
+        // Fixed-radius sphere used for the panorama preview.
+        // This keeps the viewer stable and avoids the distorted "potato shell"
+        // that can happen when noisy depth is expanded into a preview point cloud.
+        // Viewer-only change: the Python render path can still use real depth.
+        var PREVIEW_SPHERE_RADIUS = 12.0;
         
         function loadDA3PointCloud(pcData) {
             if (cloudMesh) { scene.remove(cloudMesh); cloudMesh = null; }
@@ -178,7 +184,7 @@ export const VIEWER_6DOF_HTML = `
                 for (var i = 0; i < count; i++) {
                     var x = positions[i * 3], y = positions[i * 3 + 1], z = positions[i * 3 + 2];
                     var dist = Math.sqrt(x*x + y*y + z*z);
-                    sizes[i] = Math.max(0.02, dist * 0.03);
+                    sizes[i] = Math.max(0.05, dist * 0.06);
                 }
                 geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
@@ -190,7 +196,7 @@ export const VIEWER_6DOF_HTML = `
                         void main() {
                             vColor = color;
                             vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-                            gl_PointSize = size * (300.0 / -mvPosition.z);
+                            gl_PointSize = size * (450.0 / -mvPosition.z);
                             gl_Position = projectionMatrix * mvPosition;
                         }
                     \`,
@@ -225,64 +231,89 @@ export const VIEWER_6DOF_HTML = `
             if (usingDA3PointCloud && cloudMesh) return;
             if (rgbUrl === lastRGBUrl && cloudMesh) return;
             lastRGBUrl = rgbUrl;
-            if (cloudMesh) { scene.remove(cloudMesh); cloudMesh = null; }
+
+            if (cloudMesh) {
+                scene.remove(cloudMesh);
+                if (cloudMesh.geometry) cloudMesh.geometry.dispose();
+                if (cloudMesh.material) cloudMesh.material.dispose();
+                cloudMesh = null;
+            }
 
             var loader = new THREE.TextureLoader();
-            Promise.all([
-                new Promise(function(r) { loader.load(rgbUrl, r); }),
-                new Promise(function(r) { loader.load(depthUrl, r); })
-            ]).then(function(textures) {
-                var tRGB = textures[0], tD = textures[1];
+            loader.load(rgbUrl, function(tRGB) {
                 var w = 512, h = 256;
-                var cRGB = document.createElement('canvas'); cRGB.width = w; cRGB.height = h;
-                cRGB.getContext('2d').drawImage(tRGB.image, 0, 0, w, h);
-                var dRGB = cRGB.getContext('2d').getImageData(0, 0, w, h).data;
-                var cD = document.createElement('canvas'); cD.width = w; cD.height = h;
-                cD.getContext('2d').drawImage(tD.image, 0, 0, w, h);
-                var dD = cD.getContext('2d').getImageData(0, 0, w, h).data;
+                var cRGB = document.createElement('canvas');
+                cRGB.width = w;
+                cRGB.height = h;
+                var ctx = cRGB.getContext('2d');
+                ctx.drawImage(tRGB.image, 0, 0, w, h);
+                var dRGB = ctx.getImageData(0, 0, w, h).data;
 
                 var positions = [], colors = [], sizes = [];
                 var step = 1;
-                var minDepth = depthMin || 0.5;
-                var depthRange = scale || 10.0;
+                var radius = PREVIEW_SPHERE_RADIUS;
 
                 for (var y = 0; y < h; y += step) {
                     for (var x = 0; x < w; x += step) {
                         var i = (y * w + x) * 4;
-                        var d = (dD[i] / 255.0) * depthRange + minDepth;
-                        if (d < 0.3 || d > 100) continue;
-                        var u = x / (w - 1), v = y / (h - 1);
+
+                        var u = x / (w - 1);
+                        var v = y / (h - 1);
                         var theta = (u * 2 - 1) * Math.PI;
                         var phi = (1 - v * 2) * (Math.PI / 2);
-                        // Skip pixels near the poles — they all collapse to 2 points,
-                        // creating dense blobs. Thin them out proportionally to cos(phi).
+
                         var cosPhi = Math.cos(phi);
-                        if (cosPhi < 0.05) continue;
-                        var skipChance = 1.0 - cosPhi; // 0 at equator, ~1 at poles
-                        if (Math.random() < skipChance * 0.92) continue;
-                        var px = Math.sin(theta) * cosPhi * d;
-                        var py = Math.sin(phi) * d;
-                        var pz = -Math.cos(theta) * cosPhi * d;
+                        var px = Math.sin(theta) * cosPhi * radius;
+                        var py = Math.sin(phi) * radius;
+                        var pz = -Math.cos(theta) * cosPhi * radius;
+
                         positions.push(px, py, pz);
                         colors.push(dRGB[i] / 255, dRGB[i + 1] / 255, dRGB[i + 2] / 255);
-                        sizes.push(d * 0.05);
+                        sizes.push(0.12);
                     }
                 }
+
                 var geometry = new THREE.BufferGeometry();
                 geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
                 geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
                 geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
+
                 var material = new THREE.ShaderMaterial({
                     uniforms: {},
-                    vertexShader: \`attribute float size; varying vec3 vColor; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_PointSize = size * (300.0 / -mvPosition.z); gl_Position = projectionMatrix * mvPosition; }\`,
-                    fragmentShader: \`varying vec3 vColor; void main() { vec2 center = gl_PointCoord - 0.5; float dist = length(center); float alpha = 1.0 - smoothstep(0.3, 0.5, dist); if (alpha < 0.01) discard; gl_FragColor = vec4(vColor, alpha); }\`,
-                    transparent: true, vertexColors: true, depthTest: false, depthWrite: false
+                    vertexShader: \`
+                        attribute float size;
+                        varying vec3 vColor;
+                        void main() {
+                            vColor = color;
+                            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                            gl_PointSize = size * (450.0 / -mvPosition.z);
+                            gl_Position = projectionMatrix * mvPosition;
+                        }
+                    \`,
+                    fragmentShader: \`
+                        varying vec3 vColor;
+                        void main() {
+                            vec2 center = gl_PointCoord - 0.5;
+                            float dist = length(center);
+                            float alpha = 1.0 - smoothstep(0.2, 0.5, dist);
+                            if (alpha < 0.01) discard;
+                            gl_FragColor = vec4(vColor, alpha);
+                        }
+                    \`,
+                    transparent: true,
+                    vertexColors: true,
+                    depthTest: false,
+                    depthWrite: false
                 });
+
                 cloudMesh = new THREE.Points(geometry, material);
                 cloudMesh.renderOrder = -1;
                 scene.add(cloudMesh);
                 usingDA3PointCloud = false;
-                setStatus("Depth-based: " + (positions.length / 3) + " points");
+                setStatus("Sphere panorama preview: " + (positions.length / 3) + " points");
+            }, undefined, function(err) {
+                console.error("Error loading panorama preview:", err);
+                setStatus("Error loading panorama preview", true);
             });
         }
 
@@ -314,7 +345,6 @@ export const VIEWER_6DOF_HTML = `
                 for (var i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
                 
                 var loader = new THREE.GLTFLoader();
-                // Pass './' as path argument to satisfy parser
                 loader.parse(bytes.buffer, './', (gltf) => {
                     var model = gltf.scene;
                     currentObjMesh = model;
