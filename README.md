@@ -16,6 +16,10 @@ A custom node for ComfyUI that transforms a 2D panoramic image into an interacti
 
 ---
 
+## Demo
+
+[Watch the demo here](https://youtu.be/p24BPhy0RSY?si=Zowac0u8Gafu4ooM)
+
 ## 📂 Directory Structure
 
 ```text
