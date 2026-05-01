@@ -158,12 +158,6 @@ export const VIEWER_6DOF_HTML = `
         // ============================================
         var cloudMesh = null;
         var lastRGBUrl = '';
-
-        // Fixed-radius sphere used for the panorama preview.
-        // This keeps the viewer stable and avoids the distorted "potato shell"
-        // that can happen when noisy depth is expanded into a preview point cloud.
-        // Viewer-only change: the Python render path can still use real depth.
-        var PREVIEW_SPHERE_RADIUS = 12.0;
         
         function loadDA3PointCloud(pcData) {
             if (cloudMesh) { scene.remove(cloudMesh); cloudMesh = null; }
@@ -227,6 +221,10 @@ export const VIEWER_6DOF_HTML = `
             }
         }
 
+        // ---------------------------------------------------------
+        // FIXED: updateRoom now samples the depth texture per-pixel
+        // so the preview cloud has real parallax when you translate.
+        // ---------------------------------------------------------
         function updateRoom(rgbUrl, depthUrl, scale, depthMin) {
             if (usingDA3PointCloud && cloudMesh) return;
             if (rgbUrl === lastRGBUrl && cloudMesh) return;
@@ -239,37 +237,85 @@ export const VIEWER_6DOF_HTML = `
                 cloudMesh = null;
             }
 
-            var loader = new THREE.TextureLoader();
-            loader.load(rgbUrl, function(tRGB) {
+            // We need both images before we can build the cloud.
+            var rgbImg  = new Image();
+            var depthImg = new Image();
+            var rgbReady   = false;
+            var depthReady = false;
+
+            function tryBuild() {
+                if (!rgbReady || !depthReady) return;
+
                 var w = 512, h = 256;
+
+                // --- sample RGB ---
                 var cRGB = document.createElement('canvas');
-                cRGB.width = w;
-                cRGB.height = h;
-                var ctx = cRGB.getContext('2d');
-                ctx.drawImage(tRGB.image, 0, 0, w, h);
-                var dRGB = ctx.getImageData(0, 0, w, h).data;
+                cRGB.width = w; cRGB.height = h;
+                var ctxRGB = cRGB.getContext('2d');
+                ctxRGB.drawImage(rgbImg, 0, 0, w, h);
+                var dRGB = ctxRGB.getImageData(0, 0, w, h).data;
+
+                // --- sample depth ---
+                var cD = document.createElement('canvas');
+                cD.width = w; cD.height = h;
+                var ctxD = cD.getContext('2d');
+                ctxD.drawImage(depthImg, 0, 0, w, h);
+                var dD = ctxD.getImageData(0, 0, w, h).data;
+
+                // Optional: simple 3x3 median on depth to knock down
+                // single-pixel noise spikes without blurring edges much.
+                var depthBuf = new Float32Array(w * h);
+                for (var idx = 0; idx < w * h; idx++) {
+                    depthBuf[idx] = dD[idx * 4] / 255.0;
+                }
+
+                // 3x3 median filter (keeps edges, kills salt-and-pepper noise)
+                var filtered = new Float32Array(w * h);
+                for (var fy = 0; fy < h; fy++) {
+                    for (var fx = 0; fx < w; fx++) {
+                        var vals = [];
+                        for (var ky = -1; ky <= 1; ky++) {
+                            for (var kx = -1; kx <= 1; kx++) {
+                                var sy = Math.min(Math.max(fy + ky, 0), h - 1);
+                                var sx = Math.min(Math.max(fx + kx, 0), w - 1);
+                                vals.push(depthBuf[sy * w + sx]);
+                            }
+                        }
+                        vals.sort();
+                        filtered[fy * w + fx] = vals[4]; // median of 9
+                    }
+                }
 
                 var positions = [], colors = [], sizes = [];
                 var step = 1;
-                var radius = PREVIEW_SPHERE_RADIUS;
 
                 for (var y = 0; y < h; y += step) {
                     for (var x = 0; x < w; x += step) {
                         var i = (y * w + x) * 4;
 
+                        // Reconstruct true depth from normalized preview.
+                        // Python sent: vis = (true_depth - depth_min) / (depth_max - depth_min)
+                        // And: scale = depth_max - depth_min,  depthMin = depth_min
+                        var depthNorm = filtered[y * w + x];
+                        var radius = depthMin + depthNorm * scale;
+                        if (radius < 0.05) radius = 0.05;
+
                         var u = x / (w - 1);
                         var v = y / (h - 1);
                         var theta = (u * 2 - 1) * Math.PI;
-                        var phi = (1 - v * 2) * (Math.PI / 2);
+                        var phi   = (1 - v * 2) * (Math.PI / 2);
 
                         var cosPhi = Math.cos(phi);
-                        var px = Math.sin(theta) * cosPhi * radius;
-                        var py = Math.sin(phi) * radius;
+                        var px =  Math.sin(theta) * cosPhi * radius;
+                        var py =  Math.sin(phi) * radius;
                         var pz = -Math.cos(theta) * cosPhi * radius;
 
                         positions.push(px, py, pz);
                         colors.push(dRGB[i] / 255, dRGB[i + 1] / 255, dRGB[i + 2] / 255);
-                        sizes.push(0.12);
+
+                        // Scale point size with distance so nearby surfaces stay
+                        // dense and far surfaces don't have huge gaps.
+                        sizes.push(Math.max(0.04, radius * 0.025));
                     }
                 }
 
@@ -310,11 +356,16 @@ export const VIEWER_6DOF_HTML = `
                 cloudMesh.renderOrder = -1;
                 scene.add(cloudMesh);
                 usingDA3PointCloud = false;
-                setStatus("Sphere panorama preview: " + (positions.length / 3) + " points");
-            }, undefined, function(err) {
-                console.error("Error loading panorama preview:", err);
-                setStatus("Error loading panorama preview", true);
-            });
+                setStatus("Depth cloud: " + (positions.length / 3) + " pts  (scale=" + scale.toFixed(2) + " min=" + depthMin.toFixed(2) + ")");
+            }
+
+            rgbImg.onload   = function() { rgbReady = true;   tryBuild(); };
+            depthImg.onload  = function() { depthReady = true; tryBuild(); };
+            rgbImg.onerror   = function() { setStatus("Error loading RGB preview", true); };
+            depthImg.onerror = function() { setStatus("Error loading depth preview", true); };
+
+            rgbImg.src   = rgbUrl;
+            depthImg.src = depthUrl;
         }
 
         // ============================================
@@ -603,55 +654,4 @@ export const VIEWER_6DOF_HTML = `
             var poseData = { joints: [] };
             for (var i = 0; i < 18; i++) {
                 var v = new THREE.Vector3();
-                joints[i].getWorldPosition(v);
-                poseData.joints.push({ x: v.x, y: v.y, z: v.z });
-            }
-            window.parent.postMessage({
-                type: '6DOF_UPDATE',
-                x: state.cam_x, y: state.cam_y, z: state.cam_z,
-                yaw: state.cam_yaw, pitch: state.cam_pitch, roll: state.cam_roll,
-                char_x: state.char_x, char_y: state.char_y, char_z: state.char_z,
-                char_rot_yaw: state.char_yaw,
-                char_visible: charVisible,
-                pose_json: JSON.stringify(poseData)
-            }, '*');
-        }
-
-        function animate() { requestAnimationFrame(animate); orbit.update(); renderer.render(scene, camera); }
-        animate();
-
-        window.addEventListener('resize', function() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        window.addEventListener('message', function(e) {
-            if (e.data.type === 'SYNC') {
-                var d = e.data;
-                state.cam_x = d.x; state.cam_y = d.y; state.cam_z = d.z;
-                state.cam_yaw = d.yaw; state.cam_pitch = d.pitch; state.cam_roll = d.roll;
-                state.char_x = d.char_x; state.char_y = d.char_y; state.char_z = d.char_z; state.char_yaw = d.char_yaw;
-                if (d.char_visible !== undefined) charVisible = d.char_visible;
-                var newH = parseFloat(d.char_height), newW = parseFloat(d.char_width);
-                if (Math.abs(newH - state.char_h) > 0.01 || Math.abs(newW - state.char_w) > 0.01) {
-                    state.char_h = newH; state.char_w = newW; rebuildSkeleton(newH, newW);
-                }
-                updateVisuals();
-            } else if (e.data.type === 'UPDATE_ROOM') {
-                if (e.data.pointcloud_data) loadDA3PointCloud(e.data.pointcloud_data);
-                else { usingDA3PointCloud = false; updateRoom(e.data.rgb, e.data.depth, e.data.depth_scale, e.data.depth_min); }
-            } else if (e.data.type === 'UPDATE_POINTCLOUD') {
-                loadDA3PointCloud(e.data.pointcloud_data);
-            } else if (e.data.type === 'UPDATE_OBJ') {
-                loadOBJ(e.data.obj_data, e.data.char_height || state.char_h, e.data.char_width || state.char_w);
-            } else if (e.data.type === 'UPDATE_GLB') {
-                loadGLB(e.data.glb_data);
-            }
-        });
-
-        window.parent.postMessage({ type: 'VIEWER_READY' }, '*');
-    </script>
-</body>
-</html>
-`;
+  
