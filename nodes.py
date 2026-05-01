@@ -73,7 +73,7 @@ class Qwen6DOFCamera:
             },
             "optional": {
                 "pointcloud": ("POINTCLOUD",),
-                "glb_path": ("STRING", {"forceInput": True}), # NEW: Dust3r GLB Input
+                "glb_path": ("STRING", {"forceInput": True}),
             },
             "hidden": { "unique_id": "UNIQUE_ID" }
         }
@@ -215,16 +215,15 @@ class Qwen6DOFCamera:
         
         obj_content = self.load_obj_content(custom_mesh)
         
-        # NEW: Handle GLB Data Loading (Fixed for robustness)
+        # Handle GLB Data Loading
         glb_content = None
         if glb_path:
-            # Handle if connection passed a list (batch) instead of single string
             if isinstance(glb_path, (list, tuple)):
                 safe_path = glb_path[0]
             else:
                 safe_path = glb_path
             
-            safe_path = str(safe_path) # Force string conversion
+            safe_path = str(safe_path)
             
             if os.path.exists(safe_path):
                 print(f"[Qwen6DOF] Loading GLB from: {safe_path}")
@@ -276,7 +275,7 @@ class Qwen6DOFCamera:
             }
             if obj_content: ui_data["obj_data"] = [obj_content]
             if pointcloud_json: ui_data["pointcloud_data"] = [pointcloud_json]
-            if glb_content: ui_data["glb_data"] = [glb_content] # NEW: Send GLB to Viewer
+            if glb_content: ui_data["glb_data"] = [glb_content]
             
             return {
                 "ui": ui_data,
@@ -284,7 +283,6 @@ class Qwen6DOFCamera:
             }
 
         # --- RENDER MODE (HIGH QUALITY) ---
-        # (This section is preserved from your original node)
         device = image.device
         scale_factor = {"1x": 1, "2x (Recommended)": 2, "4x (Slow)": 4}.get(point_density, 1)
         if scale_factor > 1:
@@ -308,7 +306,30 @@ class Qwen6DOFCamera:
         ), dim=-1).reshape(-1, 3).expand(B, -1, -1)
         
         points_world = unit_vectors * (depth_tensor.reshape(B, -1, 1) + 0.001)
-        camera_pos = torch.tensor([_px, _py, -_pz], device=device).reshape(1, 1, 3)
+
+        # --- DEPTH DISCONTINUITY CULLING ---
+        # Kill pixels where neighbouring depth jumps sharply — these are
+        # the object-edge pixels that produce "curtain" stretch artifacts.
+        depth_2d = depth_tensor.reshape(B, H, W)
+        # Relative depth difference vs each direct neighbour
+        pad_r = F.pad(depth_2d, (0, 1, 0, 0), mode='replicate')[..., 1:]    # shift left
+        pad_d = F.pad(depth_2d, (0, 0, 0, 1), mode='replicate')[..., 1:, :] # shift up
+        rel_r = (depth_2d - pad_r).abs() / (depth_2d + 1e-6)
+        rel_d = (depth_2d - pad_d).abs() / (depth_2d + 1e-6)
+        # Threshold: if depth changes by more than 8% relative to its
+        # value across a single pixel, it's an object boundary.
+        edge_mask = ((rel_r > 0.08) | (rel_d > 0.08)).reshape(B, -1)
+        # Also kill the immediate neighbour on the other side of the edge
+        pad_l = F.pad(depth_2d, (1, 0, 0, 0), mode='replicate')[..., :-1]
+        pad_u = F.pad(depth_2d, (0, 0, 1, 0), mode='replicate')[..., :-1, :]
+        rel_l = (depth_2d - pad_l).abs() / (depth_2d + 1e-6)
+        rel_u = (depth_2d - pad_u).abs() / (depth_2d + 1e-6)
+        edge_mask = edge_mask | ((rel_l > 0.08) | (rel_u > 0.08)).reshape(B, -1)
+        # Zero out edge points so they don't project
+        points_world[edge_mask.unsqueeze(-1).expand_as(points_world)] = 0.0
+
+        # FIX: No Z negation — viewer and renderer both use -Z forward
+        camera_pos = torch.tensor([_px, _py, _pz], device=device).reshape(1, 1, 3)
         R = self.get_rotation_matrix(_rp, _ry, _rr, device)
         f = 1.0 / torch.tan(torch.tensor(_fov * np.pi / 360.0, device=device))
         
@@ -534,7 +555,6 @@ class Qwen6DOFCamera:
             has_cand   = torch.zeros_like(mask_t)
 
             for dy, dx in _FILL_DIRS:
-                # _shift_valid zeros wrapped edges so border holes don't pull opposite-edge colors
                 nb_valid = _shift_valid(1.0 - mask_t, dy, dx)
                 candidate = fill_zone * nb_valid
                 if candidate.sum() == 0:
@@ -542,8 +562,6 @@ class Qwen6DOFCamera:
                 nb_color = torch.roll(img_t,       shifts=(dy, dx), dims=(-2, -1))
                 nb_map   = torch.roll(map_t,       shifts=(dy, dx), dims=(-2, -1))
                 nb_depth = torch.roll(depth_buf_t, shifts=(dy, dx), dims=(-2, -1))
-                # Prefer the deepest valid neighbor: avoids foreground colors
-                # bleeding into disocclusion holes that should show background.
                 deeper = candidate * (nb_depth > best_depth).float()
                 best_color = best_color * (1 - deeper) + nb_color * deeper
                 best_map   = best_map   * (1 - deeper) + nb_map   * deeper
@@ -589,7 +607,7 @@ class Qwen6DOFCamera:
         }
         if obj_content: ui_data["obj_data"] = [obj_content]
         if pointcloud_json: ui_data["pointcloud_data"] = [pointcloud_json]
-        if glb_content: ui_data["glb_data"] = [glb_content] # NEW
+        if glb_content: ui_data["glb_data"] = [glb_content]
         
         return {
             "ui": ui_data,
