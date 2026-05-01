@@ -16,10 +16,6 @@ A custom node for ComfyUI that transforms a 2D panoramic image into an interacti
 
 ---
 
-## Demo
-
-[Watch the demo here](https://youtu.be/p24BPhy0RSY?si=Zowac0u8Gafu4ooM)
-
 ## 📂 Directory Structure
 
 ```text
@@ -56,6 +52,12 @@ ComfyUI/
 
 ---
 
+## Demo
+
+[Watch the demo here](https://youtu.be/p24BPhy0RSY?si=Zowac0u8Gafu4ooM)
+
+---
+
 ## 🎮 How to Use
 
 ### Step 1 — Connect your inputs
@@ -79,6 +81,38 @@ Switch mode to **🚀 Render (High Quality)** and click Queue Prompt. The node w
 ### Step 5 — Inpaint and paste back
 
 Feed `view_image` and `inpaint_mask` into your inpainter to fill holes and add content. Then connect the edited image, the original panorama, and the `sampling_map` into the ** 6DOF Inverse** node to stitch the result back into the panorama.
+
+---
+
+## 💡 Use Cases
+
+### Virtual Production Previsualization
+
+Shoot a location with a GoPro or 360 camera, run Depth Anything on the capture, and load it into this node. You can now previsualize exact camera setups before the crew arrives — lens choice, height, angle, talent framing — all from your laptop. The character block-out gives you scale reference for talent placement. Export the camera position and FOV values and you have a shot list with real spatial coordinates tied to the actual location.
+
+### Multi-Shot Compositing from a Single Capture
+
+Render 5–10 different camera angles from one panorama, inpaint each one independently, then paste them all back via the inverse node. Each paste-back writes only its visible pixels so they don't conflict. One capture becomes an entire edited scene, art-directed from multiple perspectives with filled holes, added characters, and adjusted lighting all stitched back into a single coherent panorama.
+
+### Iterative Scene Building
+
+Render → inpaint → paste back → feed the result as the new source panorama → render from a different angle → inpaint again → paste back. Each pass fills in more of the scene. After 3–4 iterations you've effectively hallucinated a full 3D-consistent environment from a single photo. The sampling map keeps every pixel registered across passes.
+
+### ControlNet Character Insertion with Spatial Locking
+
+Render the character at a 3D position, generate with ControlNet OpenPose + depth using the `char_mask` as the inpaint region, then paste back. The character is now embedded in the panorama at a precise world-space location. Move the camera and the character stays in the correct place with correct perspective — you're placing actors in 3D, not compositing in 2D.
+
+### Panorama Style Transfer with Correct Perspective
+
+Render a full 360° of output views (e.g. 12 renders at 30° yaw increments), apply style transfer or img2img to each one, then paste them all back. The result is a style-transferred panorama with 3D-consistent perspective, not flat 2D warping. Each view is edited with proper foreshortening and depth, and the inverse node handles the spatial stitching.
+
+### Synthetic Multi-View Training Data
+
+Render the same scene from 20+ angles with depth maps and inpaint masks to produce a synthetic multi-view dataset from a single panorama. Feed that into a NeRF or 3D Gaussian Splatting trainer and you get a navigable 3D scene reconstruction. The depth discontinuity culling produces clean reprojections that make better training data than raw splatted point clouds.
+
+### MASt3R / Dust3r Bridge to True Geometry
+
+Connect a MASt3R or Dust3r reconstruction via the `glb_path` or `POINTCLOUD` input to replace estimated monocular depth with real reconstructed geometry. The viewer previews the mesh directly, and the point cloud input drives physically correct parallax — not depth-map approximation. This is the path from "2.5D trick" to actual 3D scene editing.
 
 ---
 
