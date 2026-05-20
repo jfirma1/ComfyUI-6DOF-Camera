@@ -43,7 +43,7 @@ ComfyUI/
 
 2. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/ComfyUI-6DOF-Camera.git
+   git clone https://github.com/jfirma1/ComfyUI-6DOF-Camera.git
    ```
 
 3. No extra dependencies are required beyond what ComfyUI already uses (`torch`, `numpy`, `PIL`).
