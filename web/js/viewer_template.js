@@ -654,4 +654,55 @@ export const VIEWER_6DOF_HTML = `
             var poseData = { joints: [] };
             for (var i = 0; i < 18; i++) {
                 var v = new THREE.Vector3();
-  
+                joints[i].getWorldPosition(v);
+                poseData.joints.push({ x: v.x, y: v.y, z: v.z });
+            }
+            window.parent.postMessage({
+                type: '6DOF_UPDATE',
+                x: state.cam_x, y: state.cam_y, z: state.cam_z,
+                yaw: state.cam_yaw, pitch: state.cam_pitch, roll: state.cam_roll,
+                char_x: state.char_x, char_y: state.char_y, char_z: state.char_z,
+                char_rot_yaw: state.char_yaw,
+                char_visible: charVisible,
+                pose_json: JSON.stringify(poseData)
+            }, '*');
+        }
+
+        function animate() { requestAnimationFrame(animate); orbit.update(); renderer.render(scene, camera); }
+        animate();
+
+        window.addEventListener('resize', function() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        window.addEventListener('message', function(e) {
+            if (e.data.type === 'SYNC') {
+                var d = e.data;
+                state.cam_x = d.x; state.cam_y = d.y; state.cam_z = d.z;
+                state.cam_yaw = d.yaw; state.cam_pitch = d.pitch; state.cam_roll = d.roll;
+                state.char_x = d.char_x; state.char_y = d.char_y; state.char_z = d.char_z; state.char_yaw = d.char_yaw;
+                if (d.char_visible !== undefined) charVisible = d.char_visible;
+                var newH = parseFloat(d.char_height), newW = parseFloat(d.char_width);
+                if (Math.abs(newH - state.char_h) > 0.01 || Math.abs(newW - state.char_w) > 0.01) {
+                    state.char_h = newH; state.char_w = newW; rebuildSkeleton(newH, newW);
+                }
+                updateVisuals();
+            } else if (e.data.type === 'UPDATE_ROOM') {
+                if (e.data.pointcloud_data) loadDA3PointCloud(e.data.pointcloud_data);
+                else { usingDA3PointCloud = false; updateRoom(e.data.rgb, e.data.depth, e.data.depth_scale, e.data.depth_min); }
+            } else if (e.data.type === 'UPDATE_POINTCLOUD') {
+                loadDA3PointCloud(e.data.pointcloud_data);
+            } else if (e.data.type === 'UPDATE_OBJ') {
+                loadOBJ(e.data.obj_data, e.data.char_height || state.char_h, e.data.char_width || state.char_w);
+            } else if (e.data.type === 'UPDATE_GLB') {
+                loadGLB(e.data.glb_data);
+            }
+        });
+
+        window.parent.postMessage({ type: 'VIEWER_READY' }, '*');
+    </script>
+</body>
+</html>
+`;
