@@ -44,6 +44,12 @@ app.registerExtension({
                     
                     const iframe = document.createElement("iframe");
                     Object.assign(iframe.style, { width: "100%", height: "100%", border: "none" });
+                    // Required so the fullscreen button inside viewer_template.js can work from inside the iframe.
+                    iframe.allowFullscreen = true;
+                    iframe.setAttribute("allowfullscreen", "true");
+                    iframe.setAttribute("webkitallowfullscreen", "true");
+                    iframe.setAttribute("mozallowfullscreen", "true");
+                    iframe.allow = "fullscreen";
                     iframe.srcdoc = VIEWER_6DOF_HTML;
                     div.appendChild(iframe);
 
@@ -109,6 +115,20 @@ app.registerExtension({
 
                     if (e.data.type === 'VIEWER_READY') {
                         sendSync();
+                    }
+                    else if (e.data.type === '6DOF_REQUEST_FULLSCREEN') {
+                        // Fallback path if the browser refuses document fullscreen inside the iframe.
+                        const req = iframe.requestFullscreen || iframe.webkitRequestFullscreen || iframe.msRequestFullscreen;
+                        if (req) {
+                            try {
+                                const result = req.call(iframe);
+                                if (result && typeof result.catch === "function") {
+                                    result.catch(err => console.warn("6DOF iframe fullscreen request failed:", err));
+                                }
+                            } catch (err) {
+                                console.warn("6DOF iframe fullscreen request failed:", err);
+                            }
+                        }
                     } 
                     else if (e.data.type === '6DOF_UPDATE') {
                         isUpdatingFromViewer = true; 
