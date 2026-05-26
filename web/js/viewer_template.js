@@ -631,10 +631,58 @@ export const VIEWER_6DOF_HTML = `
             setMode('camera'); sendSync();
         };
 
-        btnFull.onclick = function() {
-            if (!document.fullscreenElement) document.body.requestFullscreen();
-            else document.exitFullscreen();
+        function getFullscreenElement() {
+            return document.fullscreenElement ||
+                   document.webkitFullscreenElement ||
+                   document.msFullscreenElement ||
+                   null;
+        }
+
+        function requestViewerFullscreen() {
+            // Fullscreen the whole iframe document, not just the WebGL canvas.
+            // This preserves the toolbar, gizmo buttons, status text, and viewer UI.
+            var el = document.documentElement || document.body;
+            var req = el.requestFullscreen ||
+                      el.webkitRequestFullscreen ||
+                      el.msRequestFullscreen;
+
+            if (req) {
+                var result = req.call(el);
+                if (result && typeof result.catch === 'function') {
+                    result.catch(function(err) {
+                        console.warn('6DOF viewer fullscreen request failed:', err);
+                        setStatus('Fullscreen blocked by browser/iframe permissions', true);
+                        window.parent.postMessage({ type: '6DOF_REQUEST_FULLSCREEN' }, '*');
+                    });
+                }
+            } else {
+                window.parent.postMessage({ type: '6DOF_REQUEST_FULLSCREEN' }, '*');
+            }
+        }
+
+        function exitViewerFullscreen() {
+            var exit = document.exitFullscreen ||
+                       document.webkitExitFullscreen ||
+                       document.msExitFullscreen;
+            if (exit) exit.call(document);
+        }
+
+        function updateFullscreenButton() {
+            btnFull.innerText = getFullscreenElement() ? '⛶ Exit' : '⛶ Full';
+        }
+
+        btnFull.onclick = function(event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            if (!getFullscreenElement()) requestViewerFullscreen();
+            else exitViewerFullscreen();
         };
+
+        document.addEventListener('fullscreenchange', updateFullscreenButton);
+        document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+        document.addEventListener('MSFullscreenChange', updateFullscreenButton);
 
         // ============================================
         // 9. COMMUNICATION
